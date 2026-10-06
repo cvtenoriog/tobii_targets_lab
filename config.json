@@ -1,0 +1,78 @@
+{
+  "participant_id": "P01",
+  "fullscreen": false,
+  "screen_width_px": 1440,
+  "screen_height_px": 900,
+  "screen_width_cm": 33.0,
+  "screen_height_cm": 20.7,
+  "viewing_distance_cm": 60.0,
+  "background_color": [
+    22,
+    26,
+    35
+  ],
+  "show_grid": false,
+  "fps": 60,
+  "input_mode": "mouse",
+  "log_dir": "logs",
+  "condition_order": "fixed",
+  "conditions": [
+    {
+      "id": "dwell_250",
+      "label": "250 ms",
+      "dwell_time_ms": 250
+    },
+    {
+      "id": "dwell_500",
+      "label": "500 ms",
+      "dwell_time_ms": 500
+    },
+    {
+      "id": "dwell_900",
+      "label": "900 ms",
+      "dwell_time_ms": 900
+    }
+  ],
+  "levels": [
+    {
+      "id": "L1",
+      "name": "Static circles 3x2",
+      "rows": 2,
+      "cols": 3,
+      "repetitions_per_target": 2,
+      "target_radius_deg": 1.5,
+      "spacing_x_deg": 7.0,
+      "spacing_y_deg": 5.5,
+      "labels": [
+        "A",
+        "B",
+        "C",
+        "D",
+        "E",
+        "F"
+      ],
+      "colors": [
+        [
+          80,
+          160,
+          255
+        ]
+      ],
+      "highlight_color": [
+        255,
+        215,
+        0
+      ]
+    }
+  ],
+  "input": {
+    "mouse": {
+      "hide_cursor": false
+    },
+    "tobii": {
+      "backend": "tobii_research",
+      "screen_index": 0,
+      "require_user_presence": false
+    }
+  }
+}

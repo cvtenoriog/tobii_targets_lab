@@ -1,0 +1,3 @@
+pygame>=2.5,<3
+# Optional, only if your Tobii SDK exposes the Python binding:
+# tobii-research
