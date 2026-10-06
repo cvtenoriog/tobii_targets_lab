@@ -16,11 +16,11 @@
   "input_mode": "mouse",
   "log_dir": "logs",
   "condition_order": "fixed",
-  "conditions": [
+  "conditions": [    
     {
-      "id": "dwell_250",
-      "label": "250 ms",
-      "dwell_time_ms": 250
+      "id": "dwell_900",
+      "label": "900 ms",
+      "dwell_time_ms": 900
     },
     {
       "id": "dwell_500",
@@ -28,9 +28,9 @@
       "dwell_time_ms": 500
     },
     {
-      "id": "dwell_900",
-      "label": "900 ms",
-      "dwell_time_ms": 900
+      "id": "dwell_250",
+      "label": "250 ms",
+      "dwell_time_ms": 250
     }
   ],
   "levels": [
