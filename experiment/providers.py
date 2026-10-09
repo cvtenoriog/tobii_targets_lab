@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import os
+import socket
+import subprocess
 import time
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import pygame
@@ -53,12 +57,32 @@ class MouseInputProvider(BaseInputProvider):
         pygame.mouse.set_visible(True)
 
 
-class TobiiInputProvider(BaseInputProvider):
+class TobiiSdkBridgeInputProvider(BaseInputProvider):
     source_name = "tobii"
 
-    def __init__(self, screen_size: Tuple[int, int], settings: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(
+        self,
+        screen_size: Tuple[int, int],
+        settings: Optional[Dict[str, Any]] = None,
+        project_root: Optional[Path] = None,
+    ) -> None:
         self.screen_width_px, self.screen_height_px = screen_size
         self.settings = settings or {}
+        self.project_root = Path(project_root or Path.cwd())
+
+        self.udp_ip = self.settings.get("udp_ip", "127.0.0.1")
+        self.udp_port = int(self.settings.get("udp_port", 5005))
+        self.launch_bridge = bool(self.settings.get("launch_bridge", False))
+        self.bridge_executable = self._resolve_path(self.settings.get("bridge_executable"))
+        self.bridge_cwd = self._resolve_path(self.settings.get("bridge_cwd")) if self.settings.get("bridge_cwd") else None
+        self.source_screen_width_px = float(self.settings.get("source_screen_width_px", self.screen_width_px))
+        self.source_screen_height_px = float(self.settings.get("source_screen_height_px", self.screen_height_px))
+        self.treat_zero_zero_as_invalid = bool(self.settings.get("treat_zero_zero_as_invalid", True))
+        self.sample_stale_after_ms = float(self.settings.get("sample_stale_after_ms", 250))
+        self.startup_wait_ms = float(self.settings.get("startup_wait_ms", 1000))
+
+        self.sock: Optional[socket.socket] = None
+        self.bridge_process: Optional[subprocess.Popen] = None
         self.latest_sample = InputSample(
             x_px=self.screen_width_px / 2,
             y_px=self.screen_height_px / 2,
@@ -68,104 +92,143 @@ class TobiiInputProvider(BaseInputProvider):
             timestamp_ms=time.perf_counter() * 1000.0,
             source=self.source_name,
         )
-        self.eye_tracker = None
-        self.backend = self.settings.get("backend", "tobii_research")
-        self.tr = None
+        self.last_packet_monotonic_ms = 0.0
+
+    def _resolve_path(self, value: Optional[str]) -> Optional[Path]:
+        if not value:
+            return None
+        path = Path(value)
+        if not path.is_absolute():
+            path = self.project_root / path
+        return path
 
     def start(self) -> None:
-        if self.backend != "tobii_research":
-            raise RuntimeError(
-                f"Unsupported Tobii backend '{self.backend}'. "
-                "This scaffold includes a ready provider for 'tobii_research'."
-            )
-
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            import tobii_research as tobii_research
-        except ImportError as exc:
+            self.sock.bind((self.udp_ip, self.udp_port))
+        except OSError as exc:
             raise RuntimeError(
-                "Could not import 'tobii_research'. Install the Python SDK binding or "
-                "keep input_mode='mouse' until the Tobii SDK is available on this Mac."
+                f"No se pudo abrir el puerto UDP {self.udp_ip}:{self.udp_port}. "
+                "Verifica que no haya otro proceso usando el mismo puerto."
             ) from exc
+        self.sock.setblocking(False)
 
-        self.tr = tobii_research
-        trackers = tobii_research.find_all_eyetrackers()
-        if not trackers:
-            raise RuntimeError("No Tobii tracker found by tobii_research.find_all_eyetrackers().")
+        if self.launch_bridge:
+            if self.bridge_executable is None:
+                raise RuntimeError("Falta configurar 'bridge_executable' para el modo tobii.")
+            if not self.bridge_executable.exists():
+                raise RuntimeError(f"No existe el ejecutable del bridge: {self.bridge_executable}")
+            if os.name != 'nt' and self.bridge_executable.suffix.lower() == '.exe':
+                raise RuntimeError(
+                    "El bridge incluido es un ejecutable de Windows (.exe). "
+                    "Puedes usarlo directamente en Windows, o en macOS dejar launch_bridge=false "
+                    "y conectarte a un bridge externo compatible que envíe UDP."
+                )
 
-        index = int(self.settings.get("screen_index", 0))
-        if index >= len(trackers):
-            raise RuntimeError(f"Requested Tobii tracker index {index}, but only {len(trackers)} tracker(s) were found.")
+            cwd = self.bridge_cwd or self.bridge_executable.parent
+            creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0) if os.name == 'nt' else 0
+            self.bridge_process = subprocess.Popen(
+                [str(self.bridge_executable)],
+                cwd=str(cwd),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=creationflags,
+            )
+            time.sleep(self.startup_wait_ms / 1000.0)
 
-        self.eye_tracker = trackers[index]
-        self.eye_tracker.subscribe_to(
-            tobii_research.EYETRACKER_GAZE_DATA,
-            self._gaze_callback,
-            as_dictionary=True,
-        )
+    def _consume_udp_messages(self) -> None:
+        if self.sock is None:
+            return
 
-    def _gaze_callback(self, gaze_data: Dict[str, Any]) -> None:
-        points = []
-        for side in ("left", "right"):
-            if gaze_data.get(f"{side}_gaze_point_validity", 0):
-                point = gaze_data.get(f"{side}_gaze_point_on_display_area")
-                if point is not None:
-                    points.append(point)
+        while True:
+            try:
+                payload, _ = self.sock.recvfrom(1024)
+            except BlockingIOError:
+                break
 
-        valid = len(points) > 0
-        if valid:
-            x_norm = sum(point[0] for point in points) / len(points)
-            y_norm = sum(point[1] for point in points) / len(points)
-        else:
-            x_norm = self.latest_sample.x_norm
-            y_norm = self.latest_sample.y_norm
+            decoded = payload.decode('utf-8', errors='ignore').strip()
+            if not decoded:
+                continue
+            parts = decoded.split(',')
+            if len(parts) != 3:
+                continue
+            try:
+                timestamp_us = int(parts[0])
+                raw_x = float(parts[1])
+                raw_y = float(parts[2])
+            except ValueError:
+                continue
 
-        origins = []
-        for side in ("left", "right"):
-            if gaze_data.get(f"{side}_gaze_origin_validity", 0):
-                origin = gaze_data.get(f"{side}_gaze_origin_in_user_coordinate_system")
-                if origin is not None:
-                    origins.append(origin)
+            x_norm = raw_x / self.source_screen_width_px if self.source_screen_width_px else 0.0
+            y_norm = raw_y / self.source_screen_height_px if self.source_screen_height_px else 0.0
+            x_px = max(0.0, min(float(self.screen_width_px), x_norm * self.screen_width_px))
+            y_px = max(0.0, min(float(self.screen_height_px), y_norm * self.screen_height_px))
 
-        head_x = head_y = head_z = None
-        if origins:
-            head_x = sum(origin[0] for origin in origins) / len(origins)
-            head_y = sum(origin[1] for origin in origins) / len(origins)
-            head_z = sum(origin[2] for origin in origins) / len(origins)
+            valid = True
+            if self.treat_zero_zero_as_invalid and raw_x == 0 and raw_y == 0:
+                valid = False
 
-        timestamp_us = gaze_data.get("device_time_stamp") or gaze_data.get("system_time_stamp") or int(time.time() * 1_000_000)
-        timestamp_ms = timestamp_us / 1000.0
-        x_px = x_norm * self.screen_width_px
-        y_px = y_norm * self.screen_height_px
-
-        self.latest_sample = InputSample(
-            x_px=float(x_px),
-            y_px=float(y_px),
-            x_norm=float(x_norm),
-            y_norm=float(y_norm),
-            valid=valid,
-            timestamp_ms=float(timestamp_ms),
-            source=self.source_name,
-            head_x=head_x,
-            head_y=head_y,
-            head_z=head_z,
-            user_present=valid,
-        )
+            self.latest_sample = InputSample(
+                x_px=x_px,
+                y_px=y_px,
+                x_norm=x_norm,
+                y_norm=y_norm,
+                valid=valid,
+                timestamp_ms=timestamp_us / 1000.0,
+                source=self.source_name,
+                user_present=valid,
+            )
+            self.last_packet_monotonic_ms = time.perf_counter() * 1000.0
 
     def update(self) -> InputSample:
+        self._consume_udp_messages()
+        now_ms = time.perf_counter() * 1000.0
+        if self.last_packet_monotonic_ms and (now_ms - self.last_packet_monotonic_ms) > self.sample_stale_after_ms:
+            return InputSample(
+                x_px=self.latest_sample.x_px,
+                y_px=self.latest_sample.y_px,
+                x_norm=self.latest_sample.x_norm,
+                y_norm=self.latest_sample.y_norm,
+                valid=False,
+                timestamp_ms=self.latest_sample.timestamp_ms,
+                source=self.latest_sample.source,
+                head_x=self.latest_sample.head_x,
+                head_y=self.latest_sample.head_y,
+                head_z=self.latest_sample.head_z,
+                user_present=False,
+            )
         return self.latest_sample
 
     def stop(self) -> None:
-        if self.eye_tracker is not None and self.tr is not None:
+        if self.sock is not None:
             try:
-                self.eye_tracker.unsubscribe_from(self.tr.EYETRACKER_GAZE_DATA, self._gaze_callback)
-            except Exception:
+                self.sock.close()
+            except OSError:
                 pass
+            self.sock = None
+
+        if self.bridge_process is not None:
+            try:
+                self.bridge_process.terminate()
+                self.bridge_process.wait(timeout=2)
+            except Exception:
+                try:
+                    self.bridge_process.kill()
+                except Exception:
+                    pass
+            self.bridge_process = None
 
 
 
-def create_input_provider(input_mode: str, screen_size: Tuple[int, int], input_settings: Dict[str, Any]) -> BaseInputProvider:
+def create_input_provider(
+    input_mode: str,
+    screen_size: Tuple[int, int],
+    input_settings: Dict[str, Any],
+    project_root: Optional[Path] = None,
+) -> BaseInputProvider:
     if input_mode == "mouse":
         return MouseInputProvider(screen_size, input_settings.get("mouse", {}))
     if input_mode == "tobii":
-        return TobiiInputProvider(screen_size, input_settings.get("tobii", {}))
+        return TobiiSdkBridgeInputProvider(screen_size, input_settings.get("tobii", {}), project_root)
     raise ValueError(f"Unsupported input_mode: {input_mode}")

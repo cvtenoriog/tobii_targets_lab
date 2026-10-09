@@ -13,14 +13,14 @@
   ],
   "show_grid": false,
   "fps": 60,
-  "input_mode": "mouse",
+  "input_mode": "tobii",
   "log_dir": "logs",
   "condition_order": "fixed",
-  "conditions": [    
+  "conditions": [
     {
-      "id": "dwell_900",
-      "label": "900 ms",
-      "dwell_time_ms": 900
+      "id": "dwell_250",
+      "label": "250 ms",
+      "dwell_time_ms": 250
     },
     {
       "id": "dwell_500",
@@ -28,9 +28,9 @@
       "dwell_time_ms": 500
     },
     {
-      "id": "dwell_250",
-      "label": "250 ms",
-      "dwell_time_ms": 250
+      "id": "dwell_900",
+      "label": "900 ms",
+      "dwell_time_ms": 900
     }
   ],
   "levels": [
@@ -70,9 +70,16 @@
       "hide_cursor": false
     },
     "tobii": {
-      "backend": "tobii_research",
-      "screen_index": 0,
-      "require_user_presence": false
+      "launch_bridge": true,
+      "bridge_executable": "sdk_bridge/windows/build/gaze_server.exe",
+      "bridge_cwd": "sdk_bridge/windows",
+      "udp_ip": "127.0.0.1",
+      "udp_port": 5005,
+      "source_screen_width_px": 1920,
+      "source_screen_height_px": 1080,
+      "treat_zero_zero_as_invalid": true,
+      "sample_stale_after_ms": 250,
+      "startup_wait_ms": 1200
     }
   }
 }

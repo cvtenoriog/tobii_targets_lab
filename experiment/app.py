@@ -44,6 +44,7 @@ class ExperimentApp:
             self.config.input_mode,
             (self.config.screen_width_px, self.config.screen_height_px),
             self.config.input,
+            self.root_dir,
         )
         self.logger = ExperimentLogger(self.root_dir / self.config.log_dir, self.config.participant_id)
         self.running = True
